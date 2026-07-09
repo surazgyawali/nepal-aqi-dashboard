@@ -10,6 +10,40 @@ from pathlib import Path
 
 st.set_page_config(page_title="Nepal AQI Dashboard", layout="wide", page_icon="🌍")
 
+st.markdown("""
+<style>
+    @media (max-width: 768px) {
+        .main .block-container {
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+            padding-top: 0.5rem !important;
+        }
+        .stTabs [data-baseweb="tab"] {
+            font-size: 0.7rem;
+            padding: 0.4rem 0.3rem;
+        }
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0;
+        }
+        h1 {
+            font-size: 1.4rem !important;
+        }
+        .stSubheader {
+            font-size: 1rem !important;
+        }
+        .stMetric label {
+            font-size: 0.7rem !important;
+        }
+        .stMetric div[data-testid="metric-value"] {
+            font-size: 1.1rem !important;
+        }
+        div[data-testid="column"] {
+            min-width: 100%;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
+
 DATA_PATH = Path("master_long.csv")
 
 @st.cache_data
@@ -28,8 +62,8 @@ st.markdown(
     )
 )
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["📊 Overview", "📈 Trends", "🗺️ Stations", "🔬 Analysis", "📋 Data"]
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    ["📊 Overview", "📈 Trends", "🗺️ Stations", "🔬 Analysis", "🏥 WHO Guidelines", "📋 Data"]
 )
 
 with tab1:
@@ -158,6 +192,53 @@ with tab2:
         )
         st.plotly_chart(fig, use_container_width=True)
 
+    st.subheader("Explore by Year")
+    st.caption("Drag the slider to see station rankings for each year.")
+    yr_pollutant = st.selectbox(
+        "Select Pollutant", df["pollutant"].unique(), key="yr_pollutant",
+        label_visibility="collapsed",
+    )
+    valid_years = sorted(df[df["pollutant"] == yr_pollutant]["year"].unique())
+    selected_year = st.select_slider(
+        "Year",
+        options=valid_years,
+        value=valid_years[-1] if valid_years else 2020,
+    )
+    yr_data = df[(df["pollutant"] == yr_pollutant) & (df["year"] == selected_year)]
+    yr_avg = yr_data.groupby("station")["value"].mean().reset_index()
+    yr_avg = yr_avg.sort_values("value", ascending=True)
+
+    if not yr_avg.empty:
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            fig = px.bar(
+                yr_avg.tail(15),
+                x="value",
+                y="station",
+                orientation="h",
+                color="value",
+                text=yr_avg["value"].round(1).tail(15),
+                color_continuous_scale="YlOrRd",
+            )
+            fig.update_traces(textposition="outside")
+            fig.update_layout(
+                height=450,
+                xaxis_title=f"{yr_pollutant} (µg/m³)",
+                yaxis_title=None,
+                margin=dict(l=0, r=30, t=10, b=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            best = yr_avg.iloc[0]
+            worst = yr_avg.iloc[-1]
+            st.metric("Cleanest Station", best["station"], f"{best['value']:.1f} µg/m³")
+            st.metric("Most Polluted", worst["station"], f"{worst['value']:.1f} µg/m³")
+            mid = len(yr_avg) // 2
+            st.metric("Median Station", yr_avg.iloc[mid]["station"], f"{yr_avg.iloc[mid]['value']:.1f} µg/m³")
+            st.metric("Stations Reported", yr_data["station"].nunique())
+    else:
+        st.info(f"No {yr_pollutant} data recorded for {selected_year}.")
+
 with tab3:
     st.header("Station Comparison")
 
@@ -256,7 +337,6 @@ with tab4:
             title="PM2.5 Distribution (Top 15 Stations)",
         )
         fig.update_layout(height=450, xaxis={"categoryorder": "total descending"})
-        # limit to 15 stations for readability
         top15 = pm25.groupby("station")["value"].mean().sort_values(ascending=False).head(15).index
         fig.update_xaxes(categoryorder="array", categoryarray=top15.tolist())
         st.plotly_chart(fig, use_container_width=True)
@@ -322,6 +402,254 @@ with tab4:
         st.plotly_chart(fig, use_container_width=True)
 
 with tab5:
+    st.header("WHO Air Quality Guideline Compliance")
+
+    WHO_LIMITS = {
+        "PM2.5": {"annual": 5, "daily": 15, "unit": "µg/m³"},
+        "PM10": {"annual": 15, "daily": 45, "unit": "µg/m³"},
+    }
+
+    who_pollutant = st.selectbox(
+        "Select Pollutant",
+        [p for p in ["PM2.5", "PM10"]],
+        key="who_pollutant",
+    )
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.info(f"**WHO 2021 Guideline — {who_pollutant}**\n\n"
+                f"- Annual mean: **{WHO_LIMITS[who_pollutant]['annual']}** µg/m³\n"
+                f"- 24-hour mean: **{WHO_LIMITS[who_pollutant]['daily']}** µg/m³")
+    with col2:
+        st.info("**Health implications:**\n\n"
+                "Exceeding these limits increases risk of cardiovascular and respiratory diseases. "
+                "No safe threshold has been identified — reducing exposure always improves health.")
+
+    who_data = df[df["pollutant"] == who_pollutant].copy()
+    who_data["date"] = pd.to_datetime(who_data["date"])
+
+    daily_limit = WHO_LIMITS[who_pollutant]["daily"]
+    annual_limit = WHO_LIMITS[who_pollutant]["annual"]
+
+    who_data["exceeds_daily"] = who_data["value"] > daily_limit
+
+    daily_exceed = (
+        who_data.groupby(["station", "year"])
+        .agg(total_days=("value", "count"), exceed_days=("exceeds_daily", "sum"))
+        .reset_index()
+    )
+    daily_exceed["exceed_rate"] = (daily_exceed["exceed_days"] / daily_exceed["total_days"] * 100).round(1)
+
+    annual_avg = who_data.groupby(["station", "year"])["value"].mean().reset_index()
+    annual_avg["exceeds_annual"] = annual_avg["value"] > annual_limit
+
+    st.subheader("Daily Exceedance Rate by Station")
+    st.caption(f"% of days where {who_pollutant} exceeded the 24h guideline ({daily_limit} µg/m³)")
+
+    exceed_year = st.select_slider(
+        "Year", options=sorted(daily_exceed["year"].unique()),
+        value=sorted(daily_exceed["year"].unique())[-1],
+        key="exceed_year",
+    )
+    exceed_yr = daily_exceed[daily_exceed["year"] == exceed_year].sort_values("exceed_rate")
+    if not exceed_yr.empty:
+        fig = px.bar(
+            exceed_yr,
+            x="exceed_rate",
+            y="station",
+            orientation="h",
+            color="exceed_rate",
+            text=exceed_yr["exceed_rate"].astype(str) + "%",
+            color_continuous_scale="RdYlGn_r",
+            range_color=[0, 100],
+        )
+        fig.update_traces(textposition="outside")
+        fig.update_layout(
+            height=max(350, len(exceed_yr) * 20),
+            xaxis_title="Days exceeding 24h limit (%)",
+            yaxis_title=None,
+            xaxis=dict(range=[0, 105]),
+            margin=dict(l=0, r=30, t=10, b=20),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Annual Average vs WHO Annual Guideline")
+    st.caption(f"Red line shows the WHO annual limit ({annual_limit} µg/m³)")
+
+    ann_year = st.select_slider(
+        "Year", options=sorted(annual_avg["year"].unique()),
+        value=sorted(annual_avg["year"].unique())[-1],
+        key="ann_year",
+    )
+    ann_yr = annual_avg[annual_avg["year"] == ann_year].sort_values("value", ascending=True)
+    if not ann_yr.empty:
+        ann_yr["color"] = ann_yr["value"].apply(
+            lambda v: "red" if v > annual_limit else "green"
+        )
+        fig = px.bar(
+            ann_yr,
+            x="value",
+            y="station",
+            orientation="h",
+            color="color",
+            text=ann_yr["value"].round(1),
+        )
+        fig.add_vline(x=annual_limit, line_dash="dash", line_color="red",
+                      annotation_text=f"WHO limit: {annual_limit} µg/m³")
+        fig.update_traces(textposition="outside")
+        fig.update_layout(
+            height=max(350, len(ann_yr) * 20),
+            xaxis_title=f"{who_pollutant} (µg/m³)",
+            yaxis_title=None,
+            showlegend=False,
+            margin=dict(l=0, r=30, t=10, b=20),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Exceedance Trend Over Years")
+    exceed_trend = daily_exceed.groupby("year")["exceed_rate"].mean().reset_index()
+    fig = px.line(
+        exceed_trend,
+        x="year",
+        y="exceed_rate",
+        markers=True,
+        text=exceed_trend["exceed_rate"].round(1),
+    )
+    fig.update_traces(
+        textposition="top center",
+        textfont=dict(size=11),
+    )
+    fig.update_layout(
+        height=350,
+        yaxis_title="Days exceeding 24h limit (%)",
+        xaxis=dict(tickmode="linear", dtick=1),
+        margin=dict(l=20, r=20, t=10, b=20),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Yearly Compliance Summary")
+    summary = (
+        annual_avg.groupby("year")
+        .agg(
+            total_stations=("station", "count"),
+            compliant=("exceeds_annual", lambda x: (~x).sum()),
+        )
+        .reset_index()
+    )
+    summary["compliance_rate"] = (summary["compliant"] / summary["total_stations"] * 100).round(1)
+    summary.columns = ["Year", "Total Stations", "Compliant with Annual Limit", "Compliance Rate (%)"]
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.header("Health Impact Estimates")
+
+    if who_pollutant != "PM2.5":
+        st.info("Health risk categories are defined for PM₂.₅. Switch to PM2.5 to see this section.")
+    else:
+        RISK_BANDS = [
+            (0, 5, "Good", "#00E400"),
+            (5, 15, "Moderate", "#FFFF00"),
+            (15, 25, "Unhealthy (Sensitive)", "#FF7E00"),
+            (25, 50, "Unhealthy", "#FF0000"),
+            (50, 100, "Very Unhealthy", "#8F3F97"),
+            (100, float("inf"), "Hazardous", "#7E0023"),
+        ]
+
+        def risk_label(val):
+            for lo, hi, label, _ in RISK_BANDS:
+                if lo <= val < hi:
+                    return label
+            return "Unknown"
+
+        def risk_color(val):
+            for lo, hi, _, color in RISK_BANDS:
+                if lo <= val < hi:
+                    return color
+            return "#999999"
+
+        hi_data = who_data.copy()
+        hi_data["risk_label"] = hi_data["value"].apply(risk_label)
+        hi_data["risk_color"] = hi_data["value"].apply(risk_color)
+
+        st.markdown("""
+        Long-term exposure to PM₂.₅ is linked to cardiovascular and respiratory diseases, lung cancer, and premature mortality.
+        Below is the breakdown of daily air quality by **health risk category**.
+        """)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            hi_station = st.selectbox("Station", sorted(hi_data["station"].unique()), key="hi_station")
+        with col2:
+            hi_year = st.selectbox("Year", sorted(hi_data["year"].unique(), reverse=True), key="hi_year")
+
+        hi_subset = hi_data[(hi_data["station"] == hi_station) & (hi_data["year"] == hi_year)]
+        if not hi_subset.empty:
+            risk_dist = hi_subset["risk_label"].value_counts().reset_index()
+            risk_dist.columns = ["risk", "days"]
+            risk_order = [b[2] for b in RISK_BANDS]
+            risk_dist["risk"] = pd.Categorical(risk_dist["risk"], categories=risk_order, ordered=True)
+            risk_dist = risk_dist.sort_values("risk").dropna()
+
+            color_map = {b[2]: b[3] for b in RISK_BANDS}
+
+            col_a, col_b = st.columns([1.5, 1])
+            with col_a:
+                fig = px.bar(
+                    risk_dist,
+                    x="days",
+                    y="risk",
+                    orientation="h",
+                    color="risk",
+                    color_discrete_map=color_map,
+                    text="days",
+                )
+                fig.update_traces(textposition="outside")
+                fig.update_layout(
+                    height=300,
+                    xaxis_title="Number of days",
+                    yaxis_title=None,
+                    showlegend=False,
+                    margin=dict(l=0, r=30, t=10, b=20),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col_b:
+                avg_pm = hi_subset["value"].mean()
+                worst_pm = hi_subset["value"].max()
+                unhealth_days = hi_subset[hi_subset["risk_label"].isin(
+                    ["Unhealthy", "Very Unhealthy", "Hazardous"]
+                )].shape[0]
+                pct_unhealth = unhealth_days / len(hi_subset) * 100
+
+                st.metric("Average PM₂.₅", f"{avg_pm:.1f} µg/m³")
+                st.metric("Peak PM₂.₅", f"{worst_pm:.1f} µg/m³")
+                st.metric("Unhealthy+ Days", f"{unhealth_days} ({pct_unhealth:.0f}%)")
+
+        st.subheader("Risk Category Heatmap Across Stations")
+        risk_pivot = hi_data.groupby(["station", "year"])["value"].mean().reset_index()
+        risk_pivot["risk_label"] = risk_pivot["value"].apply(risk_label)
+
+        label_to_code = {b[2]: i for i, b in enumerate(RISK_BANDS)}
+        risk_pivot["risk_code"] = risk_pivot["risk_label"].map(label_to_code)
+
+        risk_heat = risk_pivot.pivot_table(
+            index="station", columns="year", values="risk_code", aggfunc="first"
+        )
+
+        fig = px.imshow(
+            risk_heat,
+            text_auto=False,
+            color_continuous_scale=[b[3] for b in RISK_BANDS],
+            aspect="auto",
+            height=max(400, len(risk_heat) * 15),
+            labels=dict(x="Year", y="Station", color="Risk Level"),
+        )
+        fig.update_layout(margin=dict(l=0, r=20, t=10, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.caption("Based on annual average PM₂.₅. Colors follow the US EPA AQI health breakpoints.")
+
+with tab6:
     st.header("Raw Data Viewer")
 
     col1, col2, col3 = st.columns(3)
