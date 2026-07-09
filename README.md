@@ -1,6 +1,9 @@
 # Nepal Air Quality Dashboard
 
-Interactive dashboard for visualizing air quality data across Nepal (2016–2025).
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://airqualitynp.streamlit.app/)
+
+Interactive dashboard for visualizing air quality data across Nepal (2016–2025).  
+**Live**: [airqualitynp.streamlit.app](https://airqualitynp.streamlit.app/)
 
 ## Data
 
@@ -39,7 +42,8 @@ streamlit run app.py
 
 ## Deployment
 
-Deployed on [Streamlit Community Cloud](https://streamlit.io/cloud). The app auto-deploys on push to the `main` branch.
+Live at [**airqualitynp.streamlit.app**](https://airqualitynp.streamlit.app/).  
+Deployed on [Streamlit Community Cloud](https://streamlit.io/cloud) — auto-deploys on push to `main`.
 
 ## License
 
